@@ -120,6 +120,7 @@ parseYieldExpression: true
         ArrayPattern: 'ArrayPattern',
         ArrowFunctionExpression: 'ArrowFunctionExpression',
         AssignmentExpression: 'AssignmentExpression',
+        AwaitExpression: 'AwaitExpression',
         BinaryExpression: 'BinaryExpression',
         BlockStatement: 'BlockStatement',
         BreakStatement: 'BreakStatement',
@@ -210,6 +211,7 @@ parseYieldExpression: true
         NoCatchOrFinally:  'Missing catch or finally after try',
         UnknownLabel: 'Undefined label \'%0\'',
         Redeclaration: '%0 \'%1\' has already been declared',
+        IllegalAwait: 'Illegal await expression',
         IllegalContinue: 'Illegal continue statement',
         IllegalBreak: 'Illegal break statement',
         IllegalDuplicateClassProperty: 'Illegal duplicate property in class definition',
@@ -373,7 +375,7 @@ parseYieldExpression: true
         case 5:
             return (id === 'while') || (id === 'break') || (id === 'catch') ||
                 (id === 'throw') || (id === 'const') || (id === 'yield') ||
-                (id === 'class') || (id === 'super');
+                (id === 'class') || (id === 'super') || (id === 'await') || (id === 'async');
         case 6:
             return (id === 'return') || (id === 'typeof') || (id === 'delete') ||
                 (id === 'switch') || (id === 'export') || (id === 'import');
@@ -1541,6 +1543,14 @@ parseYieldExpression: true
             };
         },
 
+        createAwaitExpression: function (argument, delegate) {
+            return {
+                type: Syntax.AwaitExpression,
+                argument: argument,
+                delegate: delegate
+            };
+        },
+
         createBinaryExpression: function (operator, left, right) {
             var type = (operator === '||' || operator === '&&') ? Syntax.LogicalExpression :
                         Syntax.BinaryExpression;
@@ -1654,7 +1664,7 @@ parseYieldExpression: true
             };
         },
 
-        createFunctionDeclaration: function (id, params, defaults, body, rest, generator, expression) {
+        createFunctionDeclaration: function (id, params, defaults, body, rest, generator, async, expression) {
             return {
                 type: Syntax.FunctionDeclaration,
                 id: id,
@@ -1663,11 +1673,12 @@ parseYieldExpression: true
                 body: body,
                 rest: rest,
                 generator: generator,
+                async: async,
                 expression: expression
             };
         },
 
-        createFunctionExpression: function (id, params, defaults, body, rest, generator, expression) {
+        createFunctionExpression: function (id, params, defaults, body, rest, generator, async, expression) {
             return {
                 type: Syntax.FunctionExpression,
                 id: id,
@@ -1676,6 +1687,7 @@ parseYieldExpression: true
                 body: body,
                 rest: rest,
                 generator: generator,
+                async: async,
                 expression: expression
             };
         },
@@ -2264,14 +2276,37 @@ parseYieldExpression: true
         return delegate.createArrayExpression(elements);
     }
 
+    function parseAwaitExpression() {
+        var delegateFlag, expr;
+
+        expectKeyword('await');
+
+        if (!state.awaitAllowed) {
+            throwErrorTolerant({}, Messages.IllegalAwait);
+        }
+
+        delegateFlag = false;
+        if (match('*')) {
+            lex();
+            delegateFlag = true;
+        }
+
+        expr = parseAssignmentExpression();
+        state.awaitFound = true;
+
+        return delegate.createAwaitExpression(expr, delegateFlag);
+    }
+
     // 11.1.5 Object Initialiser
 
     function parsePropertyFunction(options) {
-        var previousStrict, previousYieldAllowed, params, defaults, body;
+        var previousStrict, previousYieldAllowed, previousAwaitAllowed, params, defaults, body;
 
         previousStrict = strict;
         previousYieldAllowed = state.yieldAllowed;
+        previousAwaitAllowed = state.previousAwaitAllowed;
         state.yieldAllowed = options.generator;
+        state.awaitAllowed = options.awaitAllowed;
         params = options.params || [];
         defaults = options.defaults || [];
 
@@ -2284,8 +2319,9 @@ parseYieldExpression: true
         }
         strict = previousStrict;
         state.yieldAllowed = previousYieldAllowed;
+        state.previousAwaitAllowed = state.previousAwaitAllowed;
 
-        return delegate.createFunctionExpression(null, params, defaults, body, options.rest || null, options.generator, body.type !== Syntax.BlockStatement);
+        return delegate.createFunctionExpression(null, params, defaults, body, options.rest || null, options.generator, options.async, body.type !== Syntax.BlockStatement);
     }
 
 
@@ -2502,6 +2538,10 @@ parseYieldExpression: true
             if (matchKeyword('this')) {
                 lex();
                 return delegate.createThisExpression();
+            }
+
+            if (matchKeyword('async')) {
+                return parseFunctionExpression();
             }
 
             if (matchKeyword('function')) {
@@ -3035,6 +3075,10 @@ parseYieldExpression: true
     function parseAssignmentExpression() {
         var expr, token, params, oldParenthesizedCount;
 
+        if (matchKeyword('await')) {
+            return parseAwaitExpression();
+        }
+
         if (matchKeyword('yield')) {
             return parseYieldExpression();
         }
@@ -3320,6 +3364,7 @@ parseYieldExpression: true
             case 'const':
             case 'var':
             case 'class':
+            case 'async':
             case 'function':
                 return delegate.createExportDeclaration(parseSourceElement(), null, null);
             }
@@ -3527,7 +3572,7 @@ parseYieldExpression: true
                 state.allowIn = true;
 
                 if (init.declarations.length === 1) {
-                    if (matchKeyword('in') || matchContextualKeyword('of')) {
+                    if (matchKeyword('in') || matchContextualKeyword('of') || matchContextualKeyword('await')) {
                         operator = lookahead;
                         if (!((operator.value === 'in' || init.kind !== 'var') && init.declarations[0].init)) {
                             lex();
@@ -3542,7 +3587,7 @@ parseYieldExpression: true
                 init = parseExpression();
                 state.allowIn = true;
 
-                if (matchContextualKeyword('of')) {
+                if (matchContextualKeyword('of') || matchContextualKeyword('await')) {
                     operator = lex();
                     left = init;
                     right = parseExpression();
@@ -4152,7 +4197,13 @@ parseYieldExpression: true
     }
 
     function parseFunctionDeclaration() {
-        var id, body, token, tmp, firstRestricted, message, previousStrict, previousYieldAllowed, generator;
+        var id, body, token, tmp, firstRestricted, message, previousStrict, previousYieldAllowed, previousAwaitAllowed, generator, async;
+
+        async = false;
+        if (match('async')) {
+            lex();
+            async = true;
+        }
 
         expectKeyword('function');
 
@@ -4188,7 +4239,9 @@ parseYieldExpression: true
 
         previousStrict = strict;
         previousYieldAllowed = state.yieldAllowed;
+        previousAwaitAllowed = state.awaitAllowed;
         state.yieldAllowed = generator;
+        state.awaitAllowed = async;
 
         body = parseFunctionSourceElements();
 
@@ -4203,12 +4256,21 @@ parseYieldExpression: true
         }
         strict = previousStrict;
         state.yieldAllowed = previousYieldAllowed;
+        state.awaitAllowed = previousAwaitAllowed;
 
-        return delegate.createFunctionDeclaration(id, tmp.params, tmp.defaults, body, tmp.rest, generator, false);
+
+        return delegate.createFunctionDeclaration(id, tmp.params, tmp.defaults, body, tmp.rest, generator, async, false);
     }
 
     function parseFunctionExpression() {
-        var token, id = null, firstRestricted, message, tmp, body, previousStrict, previousYieldAllowed, generator;
+        var token, id = null, firstRestricted, message, tmp, body, previousStrict, previousYieldAllowed, previousAwaitAllowed, generator, async;
+
+        async = false;
+        
+        if (matchKeyword('async')) {
+            lex();
+            async = true;
+        }
 
         expectKeyword('function');
 
@@ -4245,7 +4307,9 @@ parseYieldExpression: true
 
         previousStrict = strict;
         previousYieldAllowed = state.yieldAllowed;
+        previousAwaitAllowed = state.awaitAllowed;
         state.yieldAllowed = generator;
+        state.asyncAllowed = async;
 
         body = parseFunctionSourceElements();
 
@@ -4260,8 +4324,9 @@ parseYieldExpression: true
         }
         strict = previousStrict;
         state.yieldAllowed = previousYieldAllowed;
+        state.awaitAllowed = previousAwaitAllowed;
 
-        return delegate.createFunctionExpression(id, tmp.params, tmp.defaults, body, tmp.rest, generator, false);
+        return delegate.createFunctionExpression(id, tmp.params, tmp.defaults, body, tmp.rest, generator, async, false);
     }
 
     function parseYieldExpression() {
@@ -4423,7 +4488,7 @@ parseYieldExpression: true
     }
 
     function parseClassExpression() {
-        var id, previousYieldAllowed, superClass = null;
+        var id, previousYieldAllowed, previousAwaitAllowed, superClass = null;
 
         expectKeyword('class');
 
@@ -4434,16 +4499,19 @@ parseYieldExpression: true
         if (matchKeyword('extends')) {
             expectKeyword('extends');
             previousYieldAllowed = state.yieldAllowed;
+            previousAwaitAllowed = state.awaitAllowed;
             state.yieldAllowed = false;
+            state.awaitAllowed = false;
             superClass = parseAssignmentExpression();
             state.yieldAllowed = previousYieldAllowed;
+            state.awaitAllowed = previousAwaitAllowed;
         }
 
         return delegate.createClassExpression(id, superClass, parseClassBody());
     }
 
     function parseClassDeclaration() {
-        var id, previousYieldAllowed, superClass = null;
+        var id, previousYieldAllowed, previousAwaitAllowed, superClass = null;
 
         expectKeyword('class');
 
@@ -4451,10 +4519,12 @@ parseYieldExpression: true
 
         if (matchKeyword('extends')) {
             expectKeyword('extends');
+            previousAwaitAllowed = state.previousAwaitAllowed;
             previousYieldAllowed = state.yieldAllowed;
             state.yieldAllowed = false;
             superClass = parseAssignmentExpression();
             state.yieldAllowed = previousYieldAllowed;
+            state.awaitAllowed = previousAwaitAllowed;
         }
 
         return delegate.createClassDeclaration(id, superClass, parseClassBody());
@@ -4477,6 +4547,7 @@ parseYieldExpression: true
             case 'const':
             case 'let':
                 return parseConstLetDeclaration(lookahead.value);
+            case 'async':
             case 'function':
                 return parseFunctionDeclaration();
             case 'export':
@@ -5410,6 +5481,8 @@ parseYieldExpression: true
         state = {
             allowKeyword: false,
             allowIn: true,
+            awaitAllowed: false,
+            awaitFound: false,            
             labelSet: {},
             parenthesizedCount: 0,
             inFunctionBody: false,
