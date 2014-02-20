@@ -3572,7 +3572,7 @@ parseYieldExpression: true
                 state.allowIn = true;
 
                 if (init.declarations.length === 1) {
-                    if (matchKeyword('in') || matchContextualKeyword('of') || matchContextualKeyword('await')) {
+                    if (matchKeyword('in') || matchContextualKeyword('of') || (matchKeyword('await') && state.awaitAllowed)) {
                         operator = lookahead;
                         if (!((operator.value === 'in' || init.kind !== 'var') && init.declarations[0].init)) {
                             lex();
@@ -3973,6 +3973,7 @@ parseYieldExpression: true
                 return parseDoWhileStatement();
             case 'for':
                 return parseForStatement();
+            case 'async':
             case 'function':
                 return parseFunctionDeclaration();
             case 'class':
@@ -4200,7 +4201,7 @@ parseYieldExpression: true
         var id, body, token, tmp, firstRestricted, message, previousStrict, previousYieldAllowed, previousAwaitAllowed, generator, async;
 
         async = false;
-        if (match('async')) {
+        if (matchKeyword('async')) {
             lex();
             async = true;
         }
